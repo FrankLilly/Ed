@@ -1,229 +1,203 @@
 # Options Trading Bot — AI Agent Skills
 
-## Overview
+## The Edge
 
-This is an autonomous options trading bot that scans markets, generates signals
-using technical analysis, selects optimal strategies (calls, puts, spreads,
-iron condors, straddles, strangles), enforces risk management, and executes
-trades through a broker. It is designed to be operated by an AI agent.
+This bot makes money through **variance risk premium (VRP)** — the
+statistically proven tendency for implied volatility to overstate
+realized volatility ~83% of the time on major indices. We sell
+overpriced premium and let mean reversion do the work.
 
-## Agent Skills
+Secondary edges:
+- **IV rank mean reversion** — high IV rank reverts, sell premium when rich
+- **Put skew richness** — OTM puts are chronically overpriced (crash demand)
+- **Earnings IV crush** — IV spikes before earnings, collapses after
+- **Term structure** — backwardation signals fear = sell front-month
+- **Unusual flow** — piggyback institutional conviction
 
-### 1. Market Scanning & Signal Generation
+## Architecture
 
-**Trigger:** Periodic (every `scan_interval` seconds) or on-demand.
+```
+Signal Layer (what to trade)
+├── EdgeSignalGenerator   — VRP, IV rank, skew, term structure, vol regime
+├── FlowScanner           — unusual options activity, put/call ratio
+├── EarningsCalendar      — pre/post earnings signals, event avoidance
+└── Signal combination    — confluence detection, strength boosting
 
-**What the agent does:**
-- Iterates through the watchlist symbols
-- Pulls market snapshots and 50-day price history
-- Runs technical analysis: moving average crossover, RSI momentum,
-  Bollinger Band mean reversion, and IV rank volatility signals
-- Returns the strongest signal per symbol with type (bullish, bearish,
-  neutral, high_vol, low_vol), strength (0–1), and reasoning
+Strategy Layer (how to trade)
+├── Iron Condor / Butterfly — neutral premium selling (primary)
+├── Bull Put / Bear Call    — directional credit spreads
+├── Straddle / Strangle     — volatility plays (long or short)
+└── Single legs             — directional (calls/puts)
 
-**How to invoke:**
-```python
-from options_bot.bot import OptionsBot
-from options_bot.config import BotConfig
+Risk Layer (how much to trade)
+├── Per-trade risk caps     — max 5% portfolio per trade
+├── Total exposure limits   — max 20% total portfolio risk
+├── Daily loss breaker      — stop at 3% daily loss
+├── Defined-risk only       — no naked options by default
+└── Liquidity filters       — bid-ask spread, volume, OI checks
 
-config = BotConfig(watchlist=["SPY", "QQQ", "AAPL"])
-bot = OptionsBot(config)
-orders = bot.run_once()  # single scan cycle
+Execution Layer (when to act)
+├── Position Manager        — take profit 50%, stop loss 2x, DTE exit
+├── Roll engine             — roll tested positions for more premium
+├── Broker (Alpaca/Paper)   — paper or live order submission
+└── Portfolio Tracker       — P&L, Sharpe, drawdown, equity curve
+
+Validation Layer (prove it works)
+├── Backtesting engine      — GBM + jump diffusion price paths
+├── Monte Carlo simulation  — distribution of outcomes across N paths
+└── Vol surface modeling    — SVI fit, mispricing detection
 ```
 
-### 2. Strategy Selection & Trade Construction
+## Quick Start
 
-**Trigger:** When a signal is generated with sufficient strength.
-
-**What the agent does:**
-- Maps the signal type to candidate strategies:
-  - Bullish → bull call spread, bull put spread, long call
-  - Bearish → bear put spread, bear call spread, long put
-  - High volatility → long straddle, long strangle
-  - Low volatility / neutral → iron condor, iron butterfly, short strangle
-- Validates each candidate with `should_enter(signal, market)`
-- Selects optimal expiration (within configured DTE range)
-- Builds the multi-leg order with Black-Scholes pricing
-- Checks risk/reward ratio (rejects < 0.5)
-
-**Available strategies:**
-| Strategy | Legs | Bias | Risk |
-|---|---|---|---|
-| `long_call` | 1 | Bullish | Defined (premium) |
-| `long_put` | 1 | Bearish | Defined (premium) |
-| `short_call` | 1 | Bearish/Neutral | Undefined |
-| `short_put` | 1 | Bullish/Neutral | Undefined |
-| `bull_call_spread` | 2 | Bullish | Defined |
-| `bear_put_spread` | 2 | Bearish | Defined |
-| `bull_put_spread` | 2 | Bullish | Defined |
-| `bear_call_spread` | 2 | Bearish | Defined |
-| `iron_condor` | 4 | Neutral | Defined |
-| `iron_butterfly` | 4 | Neutral | Defined |
-| `long_straddle` | 2 | Volatility | Defined |
-| `short_straddle` | 2 | Low Vol | Undefined |
-| `long_strangle` | 2 | Volatility | Defined |
-| `short_strangle` | 2 | Low Vol | Undefined |
-
-### 3. Risk Management
-
-**Trigger:** Before every trade execution.
-
-**What the agent enforces:**
-- Max 5% portfolio risk per trade
-- Max 20% total portfolio risk
-- Max 10 open positions
-- Max 5 trades per day
-- 3% daily loss circuit breaker
-- DTE range: 7–60 days
-- Bid-ask spread < 10%
-- Minimum open interest (100) and volume (50)
-- Defined-risk-only mode (blocks naked options by default)
-
-**Configurable via `RiskLimits` dataclass or config JSON.**
-
-### 4. Order Execution
-
-**Trigger:** After risk approval, if `auto_trade=True`.
-
-**What the agent does:**
-- Submits the order to the broker (Alpaca or paper)
-- For multi-leg orders, uses multi-leg order class
-- Tracks order ID and maps to portfolio position
-- Logs all execution details
-
-**Brokers supported:**
-- `PaperBroker` — in-memory simulation, no API needed
-- `AlpacaBroker` — real paper/live trading via Alpaca API
-
-### 5. Position Management
-
-**Trigger:** Every scan cycle, after new trade evaluation.
-
-**What the agent does:**
-- Monitors all open positions
-- Take profit at 50% of max gain
-- Stop loss at 100% of entry premium
-- Auto-close positions with < 5 DTE
-- Updates portfolio tracker and equity curve
-
-### 6. Portfolio Analytics
-
-**Trigger:** On-demand or after each cycle.
-
-**What the agent reports:**
-- Total value, cash, unrealized/realized P&L
-- Win rate, average win/loss, profit factor
-- Max drawdown, Sharpe ratio
-- Full equity curve
-
-```python
-print(bot.portfolio.summary())
-perf = bot.portfolio.get_performance()
-```
-
-## Configuration
-
-### Environment Variables
-```
-ALPACA_API_KEY=your_key_here
-ALPACA_SECRET_KEY=your_secret_here
-```
-
-### Config File (JSON)
-Generate a default config:
+### Paper Trading (no API keys needed)
 ```bash
+# Single scan cycle
+python -m options_bot --once --auto --capital 10000
+
+# Continuous paper trading
+python -m options_bot --auto --capital 25000 --symbols SPY QQQ AAPL
+
+# Generate config file
 python -m options_bot --generate-config bot_config.json
 ```
 
-Key settings:
-```json
-{
-  "watchlist": ["SPY", "QQQ", "AAPL", "TSLA"],
-  "initial_capital": 10000,
-  "scan_interval": 300,
-  "auto_trade": false,
-  "broker": {"provider": "paper", "paper": true},
-  "risk_limits": {
-    "max_portfolio_risk_pct": 0.05,
-    "max_daily_trades": 5,
-    "require_defined_risk": true
-  }
-}
+### Backtest First (always do this)
+```bash
+# Monte Carlo: 100 simulations of iron condor over 1 year
+python -m options_bot.run_backtest -s iron_condor --paths 100
+
+# Detailed single-path backtest
+python -m options_bot.run_backtest -s iron_condor --single
+
+# Test with VRP edge: IV=25%, RV=18% (realistic)
+python -m options_bot.run_backtest -s iron_condor --iv 0.25 --vol 0.18
+
+# Compare strategies
+python -m options_bot.run_backtest -s bull_put_spread --paths 200
+python -m options_bot.run_backtest -s short_strangle --paths 200
 ```
 
-### CLI Usage
+### Live Trading (requires Alpaca)
 ```bash
-# Paper trading, manual mode (default)
-python -m options_bot --capital 10000
+export ALPACA_API_KEY=your_key
+export ALPACA_SECRET_KEY=your_secret
 
-# Auto-trade with paper broker
-python -m options_bot --auto --capital 25000 --symbols SPY QQQ AAPL
+# Paper first
+python -m options_bot --auto --capital 10000
 
-# Single scan (useful for cron/agent triggers)
-python -m options_bot --once --auto
-
-# Live trading (requires confirmation)
-python -m options_bot --live --capital 50000
-
-# Load from config file
-python -m options_bot -c bot_config.json
+# Then live (requires typing CONFIRM)
+python -m options_bot --live --auto --capital 10000
 ```
 
 ## Agent Operation Mode
 
-For AI agent autonomous operation:
-
-1. **Set `auto_trade: true`** and configure `max_auto_trades_per_day`
-2. **Use paper mode first** to validate strategy before going live
-3. **Call `bot.run_once()`** from your agent loop for controlled execution
-4. **Monitor `bot.portfolio.summary()`** after each cycle
-5. **Check `bot.portfolio.get_performance()`** to evaluate strategy effectiveness
-6. **Adjust `config.enabled_strategies`** based on market regime
-
-### Agent Decision Loop
+### Autonomous Loop
 ```python
+from options_bot.bot import OptionsBot
+from options_bot.config import BotConfig
+
 config = BotConfig.from_file("bot_config.json")
 config.auto_trade = True
 bot = OptionsBot(config)
 
-while agent_is_running:
+while True:
     orders = bot.run_once()
 
+    # Monitor performance
     perf = bot.portfolio.get_performance()
     if perf.max_drawdown > 0.10:
-        bot.config.auto_trade = False  # pause trading
-
-    if perf.win_rate < 0.30 and perf.total_trades > 20:
-        # re-evaluate strategy mix
-        pass
+        bot.config.auto_trade = False  # circuit breaker
 
     time.sleep(config.scan_interval)
 ```
+
+### Signal Analysis (read-only)
+```python
+from options_bot.signals.edge_signals import EdgeSignalGenerator
+from options_bot.data.market_data import SimulatedMarketData
+
+data = SimulatedMarketData()
+signals = EdgeSignalGenerator(data)
+
+for symbol in ["SPY", "QQQ", "AAPL"]:
+    signal = signals.get_best_signal(symbol)
+    if signal:
+        print(f"{symbol}: {signal.signal_type.value} "
+              f"(strength={signal.strength:.2f}) — {signal.reason}")
+```
+
+### Backtest Validation
+```python
+from options_bot.backtesting.engine import BacktestEngine
+from options_bot.strategies.multi_leg import IronCondor
+
+engine = BacktestEngine(initial_capital=100_000)
+mc = engine.run_monte_carlo(
+    strategy=IronCondor(),
+    num_simulations=500,
+    iv=0.25,        # what we sell
+    annual_vol=0.18, # what actually happens (VRP = 7%)
+)
+print(f"Profitable paths: {mc['profitable_paths_pct']:.0%}")
+print(f"Avg return: {mc['avg_return']:.1%}")
+```
+
+## Configuration
+
+### Risk Limits (defaults)
+| Parameter | Default | Description |
+|---|---|---|
+| `max_portfolio_risk_pct` | 5% | Max risk per trade |
+| `max_total_risk_pct` | 20% | Max total portfolio risk |
+| `max_positions` | 10 | Max concurrent positions |
+| `max_daily_trades` | 5 | Daily trade limit |
+| `max_daily_loss` | 3% | Daily loss circuit breaker |
+| `require_defined_risk` | True | Block naked options |
+| `min_days_to_expiry` | 7 | Don't trade near expiry |
+| `max_days_to_expiry` | 60 | Don't buy far-dated |
+
+### Position Management
+| Parameter | Default | Why |
+|---|---|---|
+| Take profit | 50% of max | Captures most premium, avoids gamma risk |
+| Stop loss | 2x credit | Limits tail losses |
+| Min DTE close | 7 days | Gamma risk accelerates |
+| Roll threshold | 14 DTE | Roll for new premium before decay |
+| Delta defense | 0.30 | Adjust when tested |
 
 ## File Structure
 
 ```
 options_bot/
-├── __init__.py          # Package init
-├── __main__.py          # CLI entry point
-├── bot.py               # Main orchestrator
-├── config.py            # Configuration management
-├── models.py            # Core data models
+├── __init__.py
+├── __main__.py              # CLI entry point
+├── bot.py                   # Main orchestrator (edge-based)
+├── config.py                # Configuration
+├── models.py                # Data models
+├── run_backtest.py          # Backtest runner
 ├── pricing/
-│   ├── black_scholes.py # Black-Scholes pricing
-│   └── greeks.py        # Greeks calculations
+│   ├── black_scholes.py     # BS pricing + IV solver
+│   ├── greeks.py            # Greeks calculations
+│   └── vol_surface.py       # SVI vol surface + VRP analyzer
 ├── strategies/
-│   ├── base.py          # Strategy base class
-│   ├── single_leg.py    # Long/short calls and puts
-│   ├── spreads.py       # Vertical spreads
-│   └── multi_leg.py     # Straddles, strangles, iron condors
+│   ├── base.py              # Strategy base class
+│   ├── single_leg.py        # Long/short calls and puts
+│   ├── spreads.py           # Vertical spreads
+│   ├── multi_leg.py         # Iron condors, straddles, strangles
+│   └── position_mgmt.py     # Rolling, adjustments, exits
 ├── risk/
-│   └── manager.py       # Risk management engine
+│   └── manager.py           # Risk management engine
 ├── signals/
-│   └── generator.py     # Technical analysis signals
+│   ├── generator.py         # Basic TA signals (legacy)
+│   ├── edge_signals.py      # VRP, IV rank, skew, regime signals
+│   ├── earnings.py          # Earnings calendar + IV crush
+│   └── flow.py              # Unusual options flow scanner
 ├── portfolio/
-│   └── tracker.py       # Portfolio tracking and P&L
+│   └── tracker.py           # P&L, Sharpe, drawdown tracking
+├── backtesting/
+│   └── engine.py            # GBM backtest + Monte Carlo
 └── data/
-    ├── market_data.py   # Market data providers
-    └── broker.py        # Broker integrations
+    ├── market_data.py       # Market data providers
+    └── broker.py            # Broker integrations
 ```

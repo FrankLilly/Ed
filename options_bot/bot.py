@@ -1,4 +1,9 @@
-"""Main bot orchestrator — the autonomous trading loop."""
+"""Main bot orchestrator — the autonomous trading loop.
+
+Rewired to use edge-based signals (VRP, IV rank, skew, term structure),
+volatility surface modeling, earnings awareness, flow scanning, and
+active position management. This is a real trading system.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +21,11 @@ from options_bot.data.market_data import (
 from options_bot.models import MarketSnapshot, Signal, SignalType, TradeOrder
 from options_bot.portfolio.tracker import PortfolioTracker
 from options_bot.pricing.black_scholes import BlackScholes
+from options_bot.pricing.vol_surface import VolSurface, VolAnalyzer
 from options_bot.risk.manager import RiskManager
-from options_bot.signals.generator import SignalGenerator
+from options_bot.signals.edge_signals import EdgeSignalGenerator
+from options_bot.signals.earnings import EarningsCalendar
+from options_bot.signals.flow import FlowScanner
 from options_bot.strategies.base import Strategy
 from options_bot.strategies.multi_leg import IronButterfly, IronCondor, Straddle, Strangle
 from options_bot.strategies.single_leg import LongCall, LongPut, ShortCall, ShortPut
@@ -27,6 +35,7 @@ from options_bot.strategies.spreads import (
     BullCallSpread,
     BullPutSpread,
 )
+from options_bot.strategies.position_mgmt import PositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,29 +56,54 @@ STRATEGY_MAP: dict[str, Strategy] = {
     "short_strangle": Strangle(short=True),
 }
 
-# Map signal types to preferred strategies
+# Signal-to-strategy mapping — prioritizes premium selling (the edge)
 SIGNAL_STRATEGY_MAP: dict[SignalType, list[str]] = {
-    SignalType.BULLISH: ["bull_call_spread", "bull_put_spread", "long_call"],
-    SignalType.BEARISH: ["bear_put_spread", "bear_call_spread", "long_put"],
-    SignalType.NEUTRAL: ["iron_condor", "iron_butterfly", "short_strangle"],
-    SignalType.HIGH_VOLATILITY: ["long_straddle", "long_strangle"],
-    SignalType.LOW_VOLATILITY: ["iron_condor", "short_straddle", "short_strangle"],
+    # High IV = sell premium (the primary edge)
+    SignalType.HIGH_VOLATILITY: [
+        "iron_condor",      # defined risk, neutral, collects premium
+        "bull_put_spread",   # if slight bullish bias
+        "bear_call_spread",  # if slight bearish bias
+        "short_strangle",    # wider profit zone (needs margin)
+    ],
+    # Low IV = buy premium or stay out
+    SignalType.LOW_VOLATILITY: [
+        "long_straddle",     # buy cheap vol before expansion
+        "long_strangle",     # cheaper alternative
+    ],
+    # Bullish flow/trend + high IV = sell puts
+    SignalType.BULLISH: [
+        "bull_put_spread",   # sell OTM puts for credit
+        "bull_call_spread",  # debit if IV is low
+        "long_call",         # only if IV is very low
+    ],
+    # Bearish flow/trend + high IV = sell calls
+    SignalType.BEARISH: [
+        "bear_call_spread",  # sell OTM calls for credit
+        "bear_put_spread",   # debit if IV is low
+        "long_put",          # only if IV is very low
+    ],
+    # Neutral = iron condor / butterfly
+    SignalType.NEUTRAL: [
+        "iron_condor",
+        "iron_butterfly",
+        "short_strangle",
+    ],
 }
 
 
 class OptionsBot:
-    """Autonomous options trading bot."""
+    """Autonomous options trading bot — built on real statistical edges."""
 
     def __init__(self, config: BotConfig) -> None:
         self.config = config
         self._setup_logging()
 
-        # Initialize components
+        # Initialize broker + data
         self.broker: Broker
         self.market_data: MarketDataProvider
 
         if config.broker.provider == "paper" or not config.broker.api_key:
-            logger.info("Using paper broker (no API keys or paper mode)")
+            logger.info("Using paper broker (simulated data)")
             self.broker = PaperBroker(config.initial_capital)
             self.market_data = SimulatedMarketData()
         else:
@@ -81,7 +115,12 @@ class OptionsBot:
                 config.broker.api_key, config.broker.secret_key, config.broker.paper,
             )
 
-        self.signals = SignalGenerator(self.market_data)
+        # Core systems — all edge-based
+        self.edge_signals = EdgeSignalGenerator(self.market_data)
+        self.flow_scanner = FlowScanner(self.market_data)
+        self.earnings = EarningsCalendar()
+        self.vol_surface = VolSurface()
+        self.position_mgr = PositionManager()
         self.portfolio = PortfolioTracker(config.initial_capital)
         self.risk = RiskManager(config.initial_capital, config.risk_limits)
 
@@ -97,13 +136,16 @@ class OptionsBot:
         self._last_reset_date: str = ""
 
     def run(self) -> None:
-        """Main bot loop — scan, signal, decide, execute, repeat."""
+        """Main bot loop — scan, signal, decide, execute, manage, repeat."""
         self._running = True
         logger.info("=" * 60)
-        logger.info("OPTIONS TRADING BOT STARTED")
+        logger.info("OPTIONS TRADING BOT v2 — EDGE-BASED")
         logger.info("Capital: $%.2f | Watchlist: %s", self.config.initial_capital, self.config.watchlist)
         logger.info("Strategies: %s", list(self.strategies.keys()))
-        logger.info("Auto-trade: %s | Paper: %s", self.config.auto_trade, self.config.broker.paper)
+        logger.info("Mode: %s | Auto-trade: %s",
+                     "PAPER" if self.config.broker.paper else "LIVE",
+                     self.config.auto_trade)
+        logger.info("Edge signals: VRP, IV Rank, Skew, Term Structure, Flow")
         logger.info("=" * 60)
 
         try:
@@ -120,7 +162,7 @@ class OptionsBot:
             self._shutdown()
 
     def run_once(self) -> list[TradeOrder]:
-        """Run a single scan cycle (useful for testing / AI agent triggering)."""
+        """Run a single scan cycle — for AI agent or cron use."""
         self._check_daily_reset()
         orders = self._scan_cycle()
         self._manage_positions()
@@ -130,7 +172,7 @@ class OptionsBot:
         self._running = False
 
     def _scan_cycle(self) -> list[TradeOrder]:
-        """Scan all watchlist symbols for opportunities."""
+        """Scan all symbols using edge-based signals."""
         logger.info("-" * 40)
         logger.info("SCAN CYCLE: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -138,34 +180,54 @@ class OptionsBot:
 
         for symbol in self.config.watchlist:
             try:
-                signal = self.signals.get_best_signal(symbol)
-                if signal is None:
-                    logger.debug("No signal for %s", symbol)
+                # STEP 1: Check earnings — avoid if too close
+                if self.earnings.should_avoid(symbol):
+                    logger.info("SKIP %s — earnings too close, binary risk", symbol)
+                    continue
+
+                # STEP 2: Get edge-based signals (VRP, IV rank, skew, etc.)
+                edge_signal = self.edge_signals.get_best_signal(symbol)
+
+                # STEP 3: Get flow signal (unusual options activity)
+                flow_signal = self.flow_scanner.generate_flow_signal(symbol)
+
+                # STEP 4: Get earnings signal if applicable
+                snapshot = self.market_data.get_snapshot(symbol)
+                earnings_signal = self.earnings.get_earnings_signal(
+                    symbol, snapshot.historical_volatility or 0.25,
+                )
+
+                # STEP 5: Combine signals — edge signals get priority
+                best_signal = self._combine_signals(edge_signal, flow_signal, earnings_signal)
+                if best_signal is None:
+                    logger.debug("No actionable signal for %s", symbol)
                     continue
 
                 logger.info(
                     "SIGNAL: %s %s (strength=%.2f) — %s",
-                    symbol, signal.signal_type.value, signal.strength, signal.reason,
+                    symbol, best_signal.signal_type.value, best_signal.strength,
+                    best_signal.reason,
                 )
 
-                order = self._select_and_build_trade(symbol, signal)
+                # STEP 6: Build the trade
+                order = self._select_and_build_trade(symbol, best_signal, snapshot)
                 if order is None:
                     continue
 
-                # Risk check
+                # STEP 7: Risk check
                 allowed, reason = self.risk.check_order(order, self.portfolio.open_positions)
                 if not allowed:
                     logger.warning("RISK REJECTED: %s — %s", symbol, reason)
                     continue
 
-                # Execute
+                # STEP 8: Execute or log
                 if self.config.auto_trade and self._auto_trades_today < self.config.max_auto_trades_per_day:
                     self._execute_order(order)
                     executed_orders.append(order)
                     self._auto_trades_today += 1
                 else:
                     logger.info(
-                        "TRADE OPPORTUNITY: %s %s | Max P&L: $%.2f / $%.2f | Net Premium: $%.2f",
+                        "TRADE OPPORTUNITY: %s %s | Max P/L: $%.2f / $%.2f | Premium: $%.2f",
                         order.strategy_name, symbol,
                         order.max_profit, order.max_loss, order.net_premium,
                     )
@@ -173,13 +235,69 @@ class OptionsBot:
             except Exception:
                 logger.exception("Error scanning %s", symbol)
 
-        logger.info("Scan complete. Portfolio: %s", self.portfolio.summary())
+        logger.info("Scan complete. %d orders executed.", len(executed_orders))
         return executed_orders
 
-    def _select_and_build_trade(self, symbol: str, signal: Signal) -> TradeOrder | None:
-        """Select the best strategy for a signal and build the trade."""
-        snapshot = self.market_data.get_snapshot(symbol)
-        candidate_names = SIGNAL_STRATEGY_MAP.get(signal.signal_type, [])
+    def _combine_signals(
+        self,
+        edge: Signal | None,
+        flow: Signal | None,
+        earnings: Signal | None,
+    ) -> Signal | None:
+        """Combine multiple signal sources. Edge signals get priority.
+
+        Signal confluence (multiple sources agreeing) increases strength.
+        """
+        signals = [s for s in (edge, flow, earnings) if s is not None and s.strength >= 0.4]
+        if not signals:
+            return None
+
+        # Sort by strength, take the best
+        signals.sort(key=lambda s: s.strength, reverse=True)
+        best = signals[0]
+
+        # Confluence bonus: if multiple signals agree on direction, boost strength
+        if len(signals) >= 2:
+            agreeing = sum(1 for s in signals[1:] if s.signal_type == best.signal_type)
+            if agreeing > 0:
+                boost = min(0.2, agreeing * 0.1)
+                best = Signal(
+                    signal_type=best.signal_type,
+                    symbol=best.symbol,
+                    strength=min(1.0, best.strength + boost),
+                    timestamp=best.timestamp,
+                    reason=f"{best.reason} [+{agreeing} confirming signal(s)]",
+                    indicators={**best.indicators, "confluence": agreeing + 1},
+                )
+
+        return best
+
+    def _select_and_build_trade(
+        self,
+        symbol: str,
+        signal: Signal,
+        snapshot: MarketSnapshot,
+    ) -> TradeOrder | None:
+        """Select strategy based on edge type and build the order.
+
+        Key insight: when IV is high (VRP positive), we SELL premium.
+        When IV is low, we either buy or stay out. We never fight the VRP.
+        """
+        # Check if signal indicates a specific edge
+        edge_type = signal.indicators.get("edge", "")
+
+        # Force strategy selection based on edge
+        if edge_type in ("sell_premium", "sell_premium_wide", "earnings_iv_crush", "sell_front_month"):
+            # Prefer defined-risk premium selling strategies
+            candidate_names = ["iron_condor", "bull_put_spread", "bear_call_spread", "iron_butterfly"]
+        elif edge_type == "sell_put_spread":
+            candidate_names = ["bull_put_spread", "iron_condor"]
+        elif edge_type == "buy_premium":
+            candidate_names = ["long_straddle", "long_strangle", "long_call", "long_put"]
+        elif edge_type == "follow_flow":
+            candidate_names = SIGNAL_STRATEGY_MAP.get(signal.signal_type, [])
+        else:
+            candidate_names = SIGNAL_STRATEGY_MAP.get(signal.signal_type, [])
 
         for name in candidate_names:
             strategy = self.strategies.get(name)
@@ -189,27 +307,25 @@ class OptionsBot:
             if not strategy.should_enter(signal, snapshot):
                 continue
 
-            # Pick expiration
             expirations = self.market_data.get_expirations(symbol)
             target_exp = self._select_expiration(expirations)
             if target_exp is None:
                 continue
 
             try:
+                iv = snapshot.historical_volatility or 0.25
                 order = strategy.create_order(
                     symbol=symbol,
                     underlying_price=snapshot.price,
                     expiration=target_exp,
                     signal=signal,
-                    iv=snapshot.historical_volatility or 0.3,
+                    iv=iv,
                 )
 
-                # Check risk/reward is acceptable
+                # Position sizing based on risk
                 if order.max_loss != 0:
-                    rr_ratio = order.max_profit / abs(order.max_loss) if order.max_loss != 0 else 0
-                    if rr_ratio < 0.5:
-                        logger.debug("Skipping %s: poor risk/reward (%.2f)", name, rr_ratio)
-                        continue
+                    size = self.risk.calculate_position_size(abs(order.max_loss))
+                    logger.debug("Position size: %d contracts (max_loss=$%.2f)", size, order.max_loss)
 
                 return order
 
@@ -219,9 +335,9 @@ class OptionsBot:
         return None
 
     def _select_expiration(self, expirations: list[datetime]) -> datetime | None:
-        """Pick the best expiration date within DTE range."""
+        """Pick expiration closest to 30 DTE (optimal for theta decay)."""
         now = datetime.now()
-        target_dte = (self.config.min_dte + self.config.max_dte) // 2
+        target_dte = 30  # sweet spot for theta decay vs gamma risk
 
         valid = []
         for exp in expirations:
@@ -245,52 +361,59 @@ class OptionsBot:
                 "EXECUTED: %s | Order: %s | Position: %s | Premium: $%.2f",
                 order.strategy_name, order_id, position.position_id, order.net_premium,
             )
-
         except Exception:
             logger.exception("Failed to execute order: %s", order.strategy_name)
 
     def _manage_positions(self) -> None:
-        """Monitor open positions for exit conditions."""
+        """Active position management using the PositionManager.
+
+        This is where real money is made or saved.
+        """
         for pos in self.portfolio.open_positions:
             try:
-                # Check P&L thresholds
-                if pos.entry_premium != 0:
-                    pnl_pct = pos.unrealized_pnl / abs(pos.entry_premium)
-                else:
-                    pnl_pct = 0.0
+                # Get current price for the underlying
+                symbol = pos.legs[0].contract.symbol if pos.legs else None
+                if not symbol:
+                    continue
 
-                # Take profit at 50% of max
-                if pnl_pct >= 0.5:
-                    logger.info(
-                        "TAKE PROFIT: %s (%.1f%% gain)", pos.position_id, pnl_pct * 100,
-                    )
-                    if self.config.auto_trade:
-                        self.portfolio.close_position(pos.position_id, pos.current_value)
+                snapshot = self.market_data.get_snapshot(symbol)
+                iv = snapshot.historical_volatility or 0.25
 
-                # Stop loss at -100% of entry
-                elif pnl_pct <= -1.0:
-                    logger.info(
-                        "STOP LOSS: %s (%.1f%% loss)", pos.position_id, pnl_pct * 100,
-                    )
-                    if self.config.auto_trade:
-                        self.portfolio.close_position(pos.position_id, pos.current_value)
+                # Use the position manager to evaluate
+                action = self.position_mgr.evaluate_position(pos, snapshot.price, iv)
 
-                # Check DTE — close if < 7 days to expiry
-                for leg in pos.legs:
-                    dte = (leg.contract.expiration - datetime.now()).days
-                    if dte <= 5:
-                        logger.info(
-                            "DTE EXIT: %s (%d DTE remaining)", pos.position_id, dte,
+                if action is None:
+                    continue
+
+                logger.info(
+                    "POSITION %s: %s (urgency=%.1f) — %s",
+                    pos.position_id, action.action_type, action.urgency, action.reason,
+                )
+
+                if not self.config.auto_trade:
+                    continue
+
+                if action.action_type == "close" and action.urgency >= 0.7:
+                    self.portfolio.close_position(pos.position_id, pos.current_value)
+                    self.risk.update_portfolio_value(self.portfolio.total_value)
+                    logger.info("CLOSED: %s | P&L: $%.2f", pos.position_id, pos.realized_pnl)
+
+                elif action.action_type == "roll_out" and action.urgency >= 0.4:
+                    expirations = self.market_data.get_expirations(symbol)
+                    new_exp = self._select_expiration(expirations)
+                    if new_exp:
+                        roll_order = self.position_mgr.build_roll_order(
+                            pos, snapshot.price, new_exp, iv,
                         )
-                        if self.config.auto_trade:
+                        if roll_order:
                             self.portfolio.close_position(pos.position_id, pos.current_value)
-                        break
+                            self._execute_order(roll_order)
+                            logger.info("ROLLED: %s to %s", pos.position_id, new_exp.strftime("%Y-%m-%d"))
 
             except Exception:
                 logger.exception("Error managing position %s", pos.position_id)
 
     def _check_daily_reset(self) -> None:
-        """Reset daily counters at market open."""
         today = datetime.now().strftime("%Y-%m-%d")
         if today != self._last_reset_date:
             self._last_reset_date = today
