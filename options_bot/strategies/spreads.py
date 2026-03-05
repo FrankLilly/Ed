@@ -24,8 +24,9 @@ def _make_contract(
     expiration: datetime,
     underlying_price: float,
     iv: float,
+    as_of: datetime | None = None,
 ) -> OptionContract:
-    t = BlackScholes.time_to_expiry(expiration)
+    t = BlackScholes.time_to_expiry(expiration, now=as_of)
     premium = BlackScholes.price(opt_type, underlying_price, strike, t, sigma=iv)
     return OptionContract(
         symbol=symbol,
@@ -60,8 +61,9 @@ class BullCallSpread(Strategy):
         if short_strike == 0.0:
             short_strike = round(underlying_price * 1.05, 2)
 
-        long_contract = _make_contract(symbol, OptionType.CALL, long_strike, expiration, underlying_price, iv)
-        short_contract = _make_contract(symbol, OptionType.CALL, short_strike, expiration, underlying_price, iv)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        long_contract = _make_contract(symbol, OptionType.CALL, long_strike, expiration, underlying_price, iv, as_of=as_of)
+        short_contract = _make_contract(symbol, OptionType.CALL, short_strike, expiration, underlying_price, iv, as_of=as_of)
 
         return [
             OptionLeg(contract=long_contract, side=PositionSide.LONG, quantity=int(quantity)),
@@ -94,8 +96,9 @@ class BearPutSpread(Strategy):
         if short_strike == 0.0:
             short_strike = round(underlying_price * 0.95, 2)
 
-        long_contract = _make_contract(symbol, OptionType.PUT, long_strike, expiration, underlying_price, iv)
-        short_contract = _make_contract(symbol, OptionType.PUT, short_strike, expiration, underlying_price, iv)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        long_contract = _make_contract(symbol, OptionType.PUT, long_strike, expiration, underlying_price, iv, as_of=as_of)
+        short_contract = _make_contract(symbol, OptionType.PUT, short_strike, expiration, underlying_price, iv, as_of=as_of)
 
         return [
             OptionLeg(contract=long_contract, side=PositionSide.LONG, quantity=int(quantity)),

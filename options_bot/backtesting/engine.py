@@ -261,6 +261,7 @@ class BacktestEngine:
                     current_pnl = self._mark_to_market(
                         trade["legs"], price, trade["entry_price"],
                         trade["t_remaining"] - days_held / 365.0, iv,
+                        t_at_entry=trade["t_remaining"],
                     )
 
                     # Track max drawdown within trade
@@ -309,7 +310,7 @@ class BacktestEngine:
                 # Open new trade at interval
                 if i % trade_interval == 0 and i + dte < len(path):
                     expiration = date + timedelta(days=dte)
-                    legs = strategy.build_legs(symbol, price, expiration, iv=iv)
+                    legs = strategy.build_legs(symbol, price, expiration, iv=iv, as_of=date)
                     if legs:
                         entry_premium = sum(leg.net_premium for leg in legs)
                         quantity = max(1, int(capital * 0.03 / max(abs(entry_premium), 100)))
@@ -343,23 +344,30 @@ class BacktestEngine:
         entry_price: float,
         t_remaining: float,
         iv: float,
+        t_at_entry: float = 0.0,
     ) -> float:
-        """Estimate current P&L using Black-Scholes repricing."""
+        """Estimate current P&L using Black-Scholes repricing.
+
+        Compares option values at entry (entry_price, t_at_entry) vs
+        now (current_price, t_remaining). The difference captures both
+        directional moves AND theta decay.
+        """
         total = 0.0
-        t = max(0.001, t_remaining)
+        t_now = max(0.001, t_remaining)
+        t_entry = t_at_entry if t_at_entry > 0 else t_now + 0.01
 
         for leg in legs:
-            entry_bs = BlackScholes.price(
-                leg.contract.option_type, entry_price, leg.contract.strike, t + 0.01, sigma=iv,
+            entry_val = BlackScholes.price(
+                leg.contract.option_type, entry_price, leg.contract.strike, t_entry, sigma=iv,
             )
-            current_bs = BlackScholes.price(
-                leg.contract.option_type, current_price, leg.contract.strike, t, sigma=iv,
+            current_val = BlackScholes.price(
+                leg.contract.option_type, current_price, leg.contract.strike, t_now, sigma=iv,
             )
 
             if leg.side == PositionSide.LONG:
-                total += (current_bs - entry_bs) * leg.quantity * 100
+                total += (current_val - entry_val) * leg.quantity * 100
             else:
-                total += (entry_bs - current_bs) * leg.quantity * 100
+                total += (entry_val - current_val) * leg.quantity * 100
 
         return total
 

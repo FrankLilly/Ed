@@ -43,8 +43,9 @@ class Straddle(Strategy):
         if strike == 0.0:
             strike = round(underlying_price, 2)
 
-        call = _make_contract(symbol, OptionType.CALL, strike, expiration, underlying_price, iv)
-        put = _make_contract(symbol, OptionType.PUT, strike, expiration, underlying_price, iv)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        call = _make_contract(symbol, OptionType.CALL, strike, expiration, underlying_price, iv, as_of=as_of)
+        put = _make_contract(symbol, OptionType.PUT, strike, expiration, underlying_price, iv, as_of=as_of)
 
         side = PositionSide.SHORT if self._short else PositionSide.LONG
         qty = int(quantity)
@@ -87,8 +88,9 @@ class Strangle(Strategy):
         if put_strike == 0.0:
             put_strike = round(underlying_price * 0.95, 2)
 
-        call = _make_contract(symbol, OptionType.CALL, call_strike, expiration, underlying_price, iv)
-        put = _make_contract(symbol, OptionType.PUT, put_strike, expiration, underlying_price, iv)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        call = _make_contract(symbol, OptionType.CALL, call_strike, expiration, underlying_price, iv, as_of=as_of)
+        put = _make_contract(symbol, OptionType.PUT, put_strike, expiration, underlying_price, iv, as_of=as_of)
 
         side = PositionSide.SHORT if self._short else PositionSide.LONG
         qty = int(quantity)
@@ -132,26 +134,27 @@ class IronCondor(Strategy):
             call_long_strike = round(underlying_price * 1.10, 2)
 
         qty = int(quantity)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
         return [
             # Bull put spread (lower wing)
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.PUT, put_long_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.PUT, put_long_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.LONG,
                 quantity=qty,
             ),
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.PUT, put_short_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.PUT, put_short_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.SHORT,
                 quantity=qty,
             ),
             # Bear call spread (upper wing)
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.CALL, call_short_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.CALL, call_short_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.SHORT,
                 quantity=qty,
             ),
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.CALL, call_long_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.CALL, call_long_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.LONG,
                 quantity=qty,
             ),
@@ -190,29 +193,30 @@ class IronButterfly(Strategy):
         put_long_strike = center_strike - wing_width
         call_long_strike = center_strike + wing_width
         qty = int(quantity)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
 
         return [
             # Long OTM put (lower wing)
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.PUT, put_long_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.PUT, put_long_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.LONG,
                 quantity=qty,
             ),
             # Short ATM put
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.PUT, center_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.PUT, center_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.SHORT,
                 quantity=qty,
             ),
             # Short ATM call
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.CALL, center_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.CALL, center_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.SHORT,
                 quantity=qty,
             ),
             # Long OTM call (upper wing)
             OptionLeg(
-                contract=_make_contract(symbol, OptionType.CALL, call_long_strike, expiration, underlying_price, iv),
+                contract=_make_contract(symbol, OptionType.CALL, call_long_strike, expiration, underlying_price, iv, as_of=as_of),
                 side=PositionSide.LONG,
                 quantity=qty,
             ),

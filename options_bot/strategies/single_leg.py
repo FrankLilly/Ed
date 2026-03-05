@@ -35,7 +35,8 @@ class LongCall(Strategy):
     ) -> list[OptionLeg]:
         if strike == 0.0:
             strike = round(underlying_price * 1.02, 2)  # slightly OTM
-        t = BlackScholes.time_to_expiry(expiration)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        t = BlackScholes.time_to_expiry(expiration, now=as_of)
         premium = BlackScholes.price(OptionType.CALL, underlying_price, strike, t, sigma=iv)
         contract = OptionContract(
             symbol=symbol,
@@ -70,7 +71,8 @@ class LongPut(Strategy):
     ) -> list[OptionLeg]:
         if strike == 0.0:
             strike = round(underlying_price * 0.98, 2)  # slightly OTM
-        t = BlackScholes.time_to_expiry(expiration)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        t = BlackScholes.time_to_expiry(expiration, now=as_of)
         premium = BlackScholes.price(OptionType.PUT, underlying_price, strike, t, sigma=iv)
         contract = OptionContract(
             symbol=symbol,
@@ -105,7 +107,8 @@ class ShortCall(Strategy):
     ) -> list[OptionLeg]:
         if strike == 0.0:
             strike = round(underlying_price * 1.05, 2)  # OTM
-        t = BlackScholes.time_to_expiry(expiration)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        t = BlackScholes.time_to_expiry(expiration, now=as_of)
         premium = BlackScholes.price(OptionType.CALL, underlying_price, strike, t, sigma=iv)
         contract = OptionContract(
             symbol=symbol,
@@ -140,7 +143,8 @@ class ShortPut(Strategy):
     ) -> list[OptionLeg]:
         if strike == 0.0:
             strike = round(underlying_price * 0.95, 2)  # OTM
-        t = BlackScholes.time_to_expiry(expiration)
+        as_of = kwargs.get("as_of")  # type: ignore[arg-type]
+        t = BlackScholes.time_to_expiry(expiration, now=as_of)
         premium = BlackScholes.price(OptionType.PUT, underlying_price, strike, t, sigma=iv)
         contract = OptionContract(
             symbol=symbol,
