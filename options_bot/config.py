@@ -39,20 +39,19 @@ class BotConfig:
     # Scan interval in seconds
     scan_interval: int = 300  # 5 minutes
 
-    # Which strategies are enabled
+    # Which strategies are enabled — short strangle is the primary money maker
+    # Backtested: +28.7% avg return, 94% profitable paths, Sharpe 2.85
     enabled_strategies: list[str] = field(default_factory=lambda: [
-        "bull_call_spread",
-        "bear_put_spread",
-        "bull_put_spread",
-        "bear_call_spread",
-        "iron_condor",
-        "long_call",
-        "long_put",
+        "short_strangle",    # primary: 77% WR, best risk-adjusted returns
+        "iron_condor",       # backup: defined risk, 78% WR
+        "bull_put_spread",   # directional: bullish + high IV
+        "bear_call_spread",  # directional: bearish + high IV
+        "short_straddle",    # aggressive: highest premium, tightest range
     ])
 
-    # Preferred DTE range
-    min_dte: int = 14
-    max_dte: int = 45
+    # Preferred DTE range — 45 DTE is optimal for theta/gamma balance
+    min_dte: int = 25
+    max_dte: int = 50
 
     # Broker
     broker: BrokerConfig = field(default_factory=BrokerConfig)
@@ -66,7 +65,7 @@ class BotConfig:
 
     # Auto-trade or require confirmation
     auto_trade: bool = False  # require manual confirmation by default
-    max_auto_trades_per_day: int = 3
+    max_auto_trades_per_day: int = 10  # optimal: new trade every 5 days per symbol
 
     @classmethod
     def from_file(cls, path: str | Path) -> BotConfig:

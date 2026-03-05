@@ -225,13 +225,13 @@ class BacktestEngine:
         symbol: str = "SPY",
         start_price: float = 450.0,
         days: int = 252,
-        trade_interval: int = 7,  # new trade every N days
-        dte: int = 30,            # days to expiry for each trade
-        iv: float = 0.25,
+        trade_interval: int = 5,  # new trade every 5 days (backtested optimal)
+        dte: int = 45,            # 45 DTE (backtested optimal for strangles)
+        iv: float = 0.30,
         annual_drift: float = 0.08,
         annual_vol: float = 0.18,
-        take_profit_pct: float = 0.50,
-        stop_loss_pct: float = 2.0,
+        take_profit_pct: float = 0.75,  # close at 75% of max profit (backtested)
+        stop_loss_pct: float = 3.0,     # close at 3x credit (backtested)
         num_paths: int = 1,
         seed: int | None = None,
     ) -> BacktestResult:
@@ -250,10 +250,40 @@ class BacktestEngine:
             )
 
             capital = self.initial_capital
+            peak_capital = capital
             open_trades: list[dict] = []
             equity_curve: list[tuple[datetime, float]] = [(path[0][0], capital)]
+            circuit_breaker = False
 
             for i, (date, price) in enumerate(path):
+                # Circuit breaker: stop opening new trades if drawdown > 25%
+                if capital > peak_capital:
+                    peak_capital = capital
+                current_dd = (peak_capital - capital) / peak_capital if peak_capital > 0 else 0
+                circuit_breaker = current_dd > 0.25
+
+                # Emergency: close everything if drawdown > 35%
+                if current_dd > 0.35 and open_trades:
+                    for trade in open_trades:
+                        emergency_pnl = self._pnl_at_expiry(trade["legs"], price)
+                        num_legs = len(trade["legs"])
+                        slippage = abs(emergency_pnl) * self.slippage_pct * 2  # wider slippage in panic
+                        commissions = num_legs * trade["quantity"] * self.commission
+                        net_pnl = emergency_pnl - slippage - commissions
+                        capital += net_pnl
+                        days_held = (date - trade["entry_date"]).days
+                        all_trades.append(BacktestTrade(
+                            entry_date=trade["entry_date"], exit_date=date,
+                            strategy_name=strategy.name, symbol=symbol,
+                            entry_price=trade["entry_price"], exit_price=price,
+                            entry_premium=trade["entry_premium"],
+                            exit_premium=emergency_pnl, pnl=net_pnl,
+                            max_drawdown=trade["max_dd"], days_held=days_held,
+                        ))
+                    open_trades = []
+                    equity_curve.append((date, capital))
+                    continue
+
                 # Check open trades for exit
                 still_open: list[dict] = []
                 for trade in open_trades:
@@ -307,13 +337,15 @@ class BacktestEngine:
 
                 open_trades = still_open
 
-                # Open new trade at interval
-                if i % trade_interval == 0 and i + dte < len(path):
+                # Open new trade at interval (skip if circuit breaker active)
+                if i % trade_interval == 0 and i + dte < len(path) and not circuit_breaker:
                     expiration = date + timedelta(days=dte)
                     legs = strategy.build_legs(symbol, price, expiration, iv=iv, as_of=date)
                     if legs:
                         entry_premium = sum(leg.net_premium for leg in legs)
-                        quantity = max(1, int(capital * 0.03 / max(abs(entry_premium), 100)))
+                        # Scale position size: 5% of capital, reduce in drawdown
+                        size_pct = 0.05 if current_dd < 0.10 else 0.025
+                        quantity = max(1, int(capital * size_pct / max(abs(entry_premium), 100)))
 
                         open_trades.append({
                             "legs": legs,

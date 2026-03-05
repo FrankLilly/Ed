@@ -12,19 +12,19 @@ from options_bot.models import OptionLeg, Position, TradeOrder
 class RiskLimits:
     """Configurable risk parameters."""
 
-    max_portfolio_risk_pct: float = 0.05  # max 5% of portfolio at risk per trade
-    max_total_risk_pct: float = 0.20  # max 20% of portfolio at risk total
-    max_single_position_pct: float = 0.10  # max 10% of portfolio in one position
-    max_positions: int = 10
-    max_daily_trades: int = 5
-    max_daily_loss: float = 0.03  # stop trading if down 3% in a day
+    max_portfolio_risk_pct: float = 0.08  # max 8% of portfolio at risk per trade
+    max_total_risk_pct: float = 0.40  # max 40% of portfolio at risk total
+    max_single_position_pct: float = 0.15  # max 15% of portfolio in one position
+    max_positions: int = 15
+    max_daily_trades: int = 10
+    max_daily_loss: float = 0.05  # stop trading if down 5% in a day
     min_days_to_expiry: int = 7  # don't open positions expiring in < 7 days
     max_days_to_expiry: int = 60  # don't buy options > 60 DTE
     max_bid_ask_spread_pct: float = 0.10  # skip illiquid options
     min_open_interest: int = 100
     min_volume: int = 50
     max_iv_percentile: float = 90.0  # don't buy options with IV > 90th percentile
-    require_defined_risk: bool = True  # only allow defined-risk strategies
+    require_defined_risk: bool = False  # allow short strangles (the primary edge)
 
 
 @dataclass

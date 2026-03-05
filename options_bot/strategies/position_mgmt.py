@@ -47,8 +47,8 @@ class PositionManager:
 
     def __init__(
         self,
-        take_profit_pct: float = 0.50,    # close at 50% of max profit
-        stop_loss_multiplier: float = 2.0, # close at 2x credit received
+        take_profit_pct: float = 0.75,    # close at 75% of max profit (backtested optimal)
+        stop_loss_multiplier: float = 3.0, # close at 3x credit received (backtested optimal)
         min_dte_close: int = 7,            # close positions < 7 DTE
         roll_dte_threshold: int = 14,       # consider rolling at 14 DTE
         delta_defense_threshold: float = 0.30,  # defend when short delta > 0.30

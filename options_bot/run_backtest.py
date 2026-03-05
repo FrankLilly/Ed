@@ -34,17 +34,17 @@ STRATEGIES = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest options strategies")
-    parser.add_argument("--strategy", "-s", type=str, default="iron_condor",
+    parser.add_argument("--strategy", "-s", type=str, default="short_strangle",
                         choices=list(STRATEGIES.keys()), help="Strategy to test")
     parser.add_argument("--capital", type=float, default=100_000, help="Starting capital")
     parser.add_argument("--days", type=int, default=252, help="Trading days to simulate")
     parser.add_argument("--paths", type=int, default=100, help="Monte Carlo paths")
     parser.add_argument("--price", type=float, default=450.0, help="Starting price")
-    parser.add_argument("--vol", type=float, default=0.20, help="Annual volatility")
+    parser.add_argument("--vol", type=float, default=0.18, help="Annual realized volatility")
     parser.add_argument("--drift", type=float, default=0.08, help="Annual drift")
-    parser.add_argument("--iv", type=float, default=0.25, help="Implied volatility (should be > vol for VRP)")
-    parser.add_argument("--dte", type=int, default=30, help="Days to expiry per trade")
-    parser.add_argument("--interval", type=int, default=7, help="Days between trades")
+    parser.add_argument("--iv", type=float, default=0.30, help="Implied volatility (should be > vol for VRP)")
+    parser.add_argument("--dte", type=int, default=45, help="Days to expiry per trade")
+    parser.add_argument("--interval", type=int, default=5, help="Days between trades")
     parser.add_argument("--single", action="store_true", help="Run single path (detailed output)")
 
     args = parser.parse_args()
