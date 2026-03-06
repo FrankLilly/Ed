@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-LLM Chatbox</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app">
+        <header>
+            <h1>Multi-LLM Chatbox</h1>
+            <div class="legend">
+                {% for key, cfg in llm_config.items() %}
+                <span class="badge" style="background: {{ cfg.color }}">{{ cfg.name }}</span>
+                {% endfor %}
+            </div>
+            <button id="reset-btn" title="Clear conversation">Reset</button>
+        </header>
+
+        <div id="chat-container">
+            <div id="messages"></div>
+        </div>
+
+        <form id="input-form">
+            <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off" autofocus />
+            <button type="submit" id="send-btn">Send</button>
+        </form>
+    </div>
+
+    <script>
+        const messagesEl = document.getElementById('messages');
+        const form = document.getElementById('input-form');
+        const input = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        const LLM_CONFIG = {{ llm_config | tojson }};
+
+        function addMessage(source, content, isError = false) {
+            const div = document.createElement('div');
+            if (source === 'user') {
+                div.className = 'message user-message';
+                div.innerHTML = `<span class="label">You</span><div class="bubble">${escapeHtml(content)}</div>`;
+            } else {
+                const cfg = LLM_CONFIG[source] || { name: source, color: '#666' };
+                div.className = 'message llm-message';
+                div.innerHTML = `
+                    <span class="label" style="color: ${cfg.color}">${cfg.name}</span>
+                    <div class="bubble" style="border-left: 3px solid ${cfg.color}">
+                        ${isError ? `<em class="error">Error: ${escapeHtml(content)}</em>` : formatContent(content)}
+                    </div>`;
+            }
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function addThinkingIndicator() {
+            const div = document.createElement('div');
+            div.className = 'message thinking';
+            div.id = 'thinking-indicator';
+            div.innerHTML = '<span class="dots">Querying all 3 LLMs<span>.</span><span>.</span><span>.</span></span>';
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function removeThinkingIndicator() {
+            const el = document.getElementById('thinking-indicator');
+            if (el) el.remove();
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        function formatContent(text) {
+            // Basic markdown-lite: code blocks, bold, newlines
+            let html = escapeHtml(text);
+            html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\n/g, '<br>');
+            return html;
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const msg = input.value.trim();
+            if (!msg) return;
+
+            addMessage('user', msg);
+            input.value = '';
+            sendBtn.disabled = true;
+            input.disabled = true;
+            addThinkingIndicator();
+
+            try {
+                const resp = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg }),
+                });
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let firstResponse = true;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const payload = line.slice(6);
+                        if (payload === '[DONE]') continue;
+
+                        if (firstResponse) {
+                            removeThinkingIndicator();
+                            firstResponse = false;
+                        }
+
+                        try {
+                            const data = JSON.parse(payload);
+                            if (data.error) {
+                                addMessage(data.source, data.error, true);
+                            } else {
+                                addMessage(data.source, data.content);
+                            }
+                        } catch {}
+                    }
+                }
+            } catch (err) {
+                removeThinkingIndicator();
+                addMessage('system', 'Network error: ' + err.message, true);
+            }
+
+            if (document.getElementById('thinking-indicator')) {
+                removeThinkingIndicator();
+            }
+            sendBtn.disabled = false;
+            input.disabled = false;
+            input.focus();
+        });
+
+        resetBtn.addEventListener('click', async () => {
+            if (!confirm('Clear the entire conversation?')) return;
+            await fetch('/reset', { method: 'POST' });
+            messagesEl.innerHTML = '';
+        });
+    </script>
+</body>
+</html>
