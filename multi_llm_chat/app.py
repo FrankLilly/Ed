@@ -4,7 +4,6 @@ import threading
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from dotenv import load_dotenv
 from openai import OpenAI
-from anthropic import Anthropic
 from google import genai
 
 load_dotenv()
@@ -13,7 +12,7 @@ app = Flask(__name__)
 
 # ── LLM clients (lazy-init so app starts even without keys) ─────────────────
 _openai_client = None
-_anthropic_client = None
+_claude_client = None
 _gemini_client = None
 
 
@@ -27,14 +26,14 @@ def get_openai():
     return _openai_client
 
 
-def get_anthropic():
-    global _anthropic_client
-    if _anthropic_client is None:
-        key = os.getenv("ANTHROPIC_API_KEY")
+def get_claude():
+    global _claude_client
+    if _claude_client is None:
+        key = os.getenv("VENICE_API_KEY")
         if not key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set in .env")
-        _anthropic_client = Anthropic(api_key=key)
-    return _anthropic_client
+            raise RuntimeError("VENICE_API_KEY not set in .env")
+        _claude_client = OpenAI(api_key=key, base_url="https://api.venice.ai/api/v1")
+    return _claude_client
 
 
 def get_gemini():
@@ -66,7 +65,7 @@ LLM_CONFIG = {
     "claude": {
         "name": "Claude",
         "color": "#d97706",
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
     },
     "gemini": {
         "name": "Gemini",
@@ -76,7 +75,7 @@ LLM_CONFIG = {
 }
 
 
-def _build_messages_for_openai() -> list[dict]:
+def _build_messages_for_openai(self_key: str) -> list[dict]:
     """Build message list in OpenAI chat format from shared history."""
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
     for entry in conversation_history:
@@ -85,33 +84,10 @@ def _build_messages_for_openai() -> list[dict]:
         else:
             label = LLM_CONFIG.get(entry["source"], {}).get("name", entry["source"])
             msgs.append({
-                "role": "assistant" if entry["source"] == "gpt4" else "user",
+                "role": "assistant" if entry["source"] == self_key else "user",
                 "content": f"[{label}]: {entry['content']}",
             })
     return msgs
-
-
-def _build_messages_for_anthropic() -> tuple[str, list[dict]]:
-    """Build message list in Anthropic format from shared history."""
-    msgs: list[dict] = []
-    for entry in conversation_history:
-        if entry["source"] == "user":
-            msgs.append({"role": "user", "content": entry["content"]})
-        else:
-            label = LLM_CONFIG.get(entry["source"], {}).get("name", entry["source"])
-            role = "assistant" if entry["source"] == "claude" else "user"
-            msgs.append({"role": role, "content": f"[{label}]: {entry['content']}"})
-    # Anthropic requires alternating user/assistant — merge consecutive same-role
-    merged: list[dict] = []
-    for m in msgs:
-        if merged and merged[-1]["role"] == m["role"]:
-            merged[-1]["content"] += "\n" + m["content"]
-        else:
-            merged.append(dict(m))
-    # Ensure first message is user role
-    if merged and merged[0]["role"] != "user":
-        merged.insert(0, {"role": "user", "content": "(conversation start)"})
-    return SYSTEM_PROMPT, merged
 
 
 def _build_messages_for_gemini() -> list[dict]:
@@ -138,7 +114,7 @@ def _build_messages_for_gemini() -> list[dict]:
 # ── LLM call functions ─────────────────────────────────────────────────────────
 
 def call_gpt4() -> str:
-    msgs = _build_messages_for_openai()
+    msgs = _build_messages_for_openai("gpt4")
     resp = get_openai().chat.completions.create(
         model=LLM_CONFIG["gpt4"]["model"],
         messages=msgs,
@@ -148,14 +124,13 @@ def call_gpt4() -> str:
 
 
 def call_claude() -> str:
-    system, msgs = _build_messages_for_anthropic()
-    resp = get_anthropic().messages.create(
+    msgs = _build_messages_for_openai("claude")
+    resp = get_claude().chat.completions.create(
         model=LLM_CONFIG["claude"]["model"],
-        system=system,
         messages=msgs,
         max_tokens=1024,
     )
-    return resp.content[0].text
+    return resp.choices[0].message.content
 
 
 def call_gemini() -> str:
