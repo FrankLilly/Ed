@@ -11,10 +11,40 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ── LLM clients ────────────────────────────────────────────────────────────────
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── LLM clients (lazy-init so app starts even without keys) ─────────────────
+_openai_client = None
+_anthropic_client = None
+_gemini_client = None
+
+
+def get_openai():
+    global _openai_client
+    if _openai_client is None:
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY not set in .env")
+        _openai_client = OpenAI(api_key=key)
+    return _openai_client
+
+
+def get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set in .env")
+        _anthropic_client = Anthropic(api_key=key)
+    return _anthropic_client
+
+
+def get_gemini():
+    global _gemini_client
+    if _gemini_client is None:
+        key = os.getenv("GOOGLE_API_KEY")
+        if not key:
+            raise RuntimeError("GOOGLE_API_KEY not set in .env")
+        _gemini_client = genai.Client(api_key=key)
+    return _gemini_client
 
 # ── Shared conversation state ──────────────────────────────────────────────────
 conversation_history: list[dict] = []
@@ -109,7 +139,7 @@ def _build_messages_for_gemini() -> list[dict]:
 
 def call_gpt4() -> str:
     msgs = _build_messages_for_openai()
-    resp = openai_client.chat.completions.create(
+    resp = get_openai().chat.completions.create(
         model=LLM_CONFIG["gpt4"]["model"],
         messages=msgs,
         max_tokens=1024,
@@ -119,7 +149,7 @@ def call_gpt4() -> str:
 
 def call_claude() -> str:
     system, msgs = _build_messages_for_anthropic()
-    resp = anthropic_client.messages.create(
+    resp = get_anthropic().messages.create(
         model=LLM_CONFIG["claude"]["model"],
         system=system,
         messages=msgs,
@@ -130,7 +160,7 @@ def call_claude() -> str:
 
 def call_gemini() -> str:
     msgs = _build_messages_for_gemini()
-    resp = gemini_client.models.generate_content(
+    resp = get_gemini().models.generate_content(
         model=LLM_CONFIG["gemini"]["model"],
         contents=msgs,
     )
